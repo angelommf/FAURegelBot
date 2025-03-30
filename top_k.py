@@ -1,138 +1,29 @@
-#!/usr/bin/env python
-# coding: utf-8
-
-# In[1]:
-
-
 import streamlit as st
 import pandas as pd
 from tqdm.auto import tqdm
 import pinecone
-from collections import Counter
-import tiktoken
-from transformers import AutoTokenizer
 from langchain.chat_models import ChatOpenAI
 from langchain.callbacks.base import BaseCallbackHandler
 from langchain.chains.question_answering import load_qa_chain
 from langchain.prompts import PromptTemplate
-from langchain.chat_models import ChatOpenAI
-from sentence_transformers import SentenceTransformer
-
-
-# In[2]:
-
+from langchain.embeddings.openai import OpenAIEmbeddings
+from langchain.vectorstores import Pinecone
 
 OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
 PINECONE_API_KEY = st.secrets["PINECONE_API_KEY"]
 PINECONE_ENV = st.secrets["PINECONE_ENV"]
 PINECONE_INDEX_NAME = st.secrets["PINECONE_INDEX_NAME"]
 
+embed = OpenAIEmbeddings(
+   model = 'text-embedding-ada-002',
+   openai_api_key= OPENAI_API_KEY
+)
+
+@st.cache_resource
 def connect_to_pinecone():
     pinecone.init(api_key=PINECONE_API_KEY, environment=PINECONE_ENV)
     return pinecone.Index(PINECONE_INDEX_NAME)
     
-idx = connect_to_pinecone()
-
-
-class SparseEncoder:
-    def __init__(self, model_id):
-        self.tokenizer = AutoTokenizer.from_pretrained(model_id)
-
-    def build_dict(self, input_batch):
-      # store a batch of sparse embeddings
-      sparse_emb = []
-      # iterate through input batch
-      for token_ids in input_batch:
-          # convert the input_ids list to a dictionary of key to frequency values
-          d = dict(Counter(token_ids))
-          # remove special tokens and append sparse vectors to sparse_emb list
-          sparse_emb.append({key: d[key] for key in d if key not in [101, 102, 103, 0]})
-      # return sparse_emb list
-      return sparse_emb
-
-    def generate_sparse_vectors(self, context_batch):
-      # create batch of input_ids
-      inputs = self.tokenizer(
-        context_batch, padding=True,
-        truncation=True,
-        max_length=512
-      )['input_ids']
-      # create sparse dictionaries
-      sparse_embeds = self.build_dict(inputs)
-      return sparse_embeds
-
-    def encode_queries(self, query):
-      sparse_vector = self.generate_sparse_vectors([query])[0]
-      # Convert the format of the sparse vector
-      indices, values = zip(*sparse_vector.items())
-      return {"indices": list(indices), "values": list(values)}
-
-
-@st.cache_data
-def load_sparse_encoder(model_id):
-    return SparseEncoder(model_id)
-
-@st.cache_resource
-def load_sentence_transformer(model_name, device):
-    return SentenceTransformer('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2', device='cpu')
-
-model_id = 'sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2'
-sparse_encoder = load_sparse_encoder(model_id)
-embed = load_sentence_transformer('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2', 'cpu')
-#embed = load_sentence_transformer('sentence-transformers/paraphrase-multilingual-mpnet-base-v2', 'cpu')
-#sentence-transformers/paraphrase-multilingual-mpnet-base-v2
-# In[7]:
-
-
-def hybrid_scale(dense, sparse, alpha: float):
-    # check alpha value is in range
-    if alpha < 0 or alpha > 1:
-        raise ValueError("Alpha must be between 0 and 1")
-    # scale sparse and dense vectors to create hybrid search vecs
-    hsparse = {
-        'indices': sparse['indices'],
-        'values':  [v * (1 - alpha) for v in sparse['values']]
-    }
-    hdense = [v * alpha for v in dense]
-    return hdense, hsparse
-
-@st.cache_data
-def hybrid_query(question, top_k, alpha, filter=None):
-    def connect_to_pinecone():
-        pinecone.init(api_key="63a060f2-2e41-4854-a497-5866c8dd65b4", environment="gcp-starter")
-        return pinecone.Index('grundordnung-fau')
-    idx = connect_to_pinecone()
-    # convert the question into a sparse vector
-    sparse_vec = sparse_encoder.generate_sparse_vectors([question])[0]
-    sparse_vec = {
-        'indices': list(sparse_vec.keys()),
-        'values': [float(value) for value in sparse_vec.values()]
-    }
-
-    # convert the question into a dense vector
-    dense_vec = embed.encode(question).tolist()
-
-    # scale alpha with hybrid_scale
-    dense_vec, sparse_vec = hybrid_scale(
-    dense_vec, sparse_vec, alpha
-    )
-    # query pinecone with the query parameters
-    result = idx.query(
-    vector=dense_vec,
-    sparse_vector=sparse_vec,
-    top_k=top_k,
-    include_metadata=True,
-    filter=filter
-    )
-    # return search results as json
-    return result
-
-
-# Indexing db to a variable
-
-# In[8]:
-
-
 class Document:
     def __init__(self, page_content, metadata):
         self.page_content = page_content
@@ -140,10 +31,6 @@ class Document:
 
     def __repr__(self):
         return f"Document(page_content='{self.page_content}', metadata={self.metadata})"
-
-
-# In[9]:
-
 
 class StreamHandler(BaseCallbackHandler):
     def __init__(self, container, initial_text="", display_method='markdown'):
@@ -156,25 +43,18 @@ class StreamHandler(BaseCallbackHandler):
         display_function = getattr(self.container, self.display_method, None)
         if display_function is not None:
             # Wrap the text in a div with a custom background color
-            colored_text = f'<div style="background-color: #08346c; padding: 10px; border-radius: 5px;">{self.text}</div>'
+            colored_text = f'<div style="background-color: #08346c; color: #FFFFFF; padding: 10px; border-radius: 5px;">{self.text}</div>'
             display_function(colored_text, unsafe_allow_html=True)
         else:
             raise ValueError(f"Invalid display_method: {self.display_method}")
-
-
-@st.cache_resource
-def connect_to_pinecone():
-    pinecone.init(api_key="63a060f2-2e41-4854-a497-5866c8dd65b4", environment="gcp-starter")
-    return pinecone.Index('grundordnung-fau')
-
 
 def run_chatbot_app():
     # Initialize Pinecone
     idx = connect_to_pinecone()
         
     # prompt template
-    template = """You are a helpful chatbot assistant that is having a conversation with a human
-                You know all the regulstion from the Friedrich-Alexander-Universität Erlangen-Nürnberg
+    template = """You are a helpful chatbot assistant who is having a conversation with a human
+                You know all the regulation from the Friedrich-Alexander-Universität Erlangen-Nürnberg
                 You should answer the question or questions posed in German, based ONLY on the context provided.
                 DON'T write about anything that isn't present in the context.
                 
@@ -190,11 +70,11 @@ def run_chatbot_app():
     )
 
     # Streamlit app
-    st.title('FAURegelBot')
+    st.title('Deine Fragen & Antworten zur FAU')
 
-    query = st.text_input("Stelle eine frage", key='input')
+    query = st.text_input("Stelle hier deine Frage", key='input')
 
-    if st.button('Suchen') or 'input' in st.session_state:
+    if st.button('jetzt finden') or 'input' in st.session_state:
         if 'input' in st.session_state:
             query = st.session_state.input
         else:
@@ -208,16 +88,20 @@ def run_chatbot_app():
             # llm setup
             chat_box = st.empty()
             stream_handler = StreamHandler(chat_box, display_method='write')
-            llm = ChatOpenAI(temperature=0, openai_api_key=OPENAI_API_KEY, model_name="gpt-3.5-turbo",
+            llm = ChatOpenAI(temperature=0, openai_api_key=OPENAI_API_KEY, model_name="gpt-3.5-turbo-1106",
                     callbacks=[stream_handler], streaming=True
             )
 
             # Fetch results with minimum score of relevancy
-            results = hybrid_query(query, top_k=3, alpha=1)
-            filtered_list = [match for match in results['matches'] if match['score'] >= 0.9]
+            vectorstore = Pinecone(idx, embed.embed_query, 'content')
+            results = vectorstore.similarity_search_with_score(query, k=3)
+
+            # Assuming 'results' is your list of tuples as provided
+            filtered_list = [doc_score_tuple for doc_score_tuple in results if doc_score_tuple[1] >= 0.85]
+
             combined_docs_chain = []
-            for result in filtered_list:
-                doc = Document(result['metadata']['content'], result['metadata'])  
+            for doc_score_tuple in filtered_list:
+                doc = Document(doc_score_tuple[0].page_content, doc_score_tuple[0].metadata)  
                 combined_docs_chain.append(doc)
 
             # Create the chain
@@ -229,12 +113,7 @@ def run_chatbot_app():
                 content = doc.page_content
                 title = doc.metadata['title']
                 paragraph = doc.metadata['paragraph']
-                content = doc.metadata['content']
                 with st.expander(f"{title} - {paragraph}"):
                     st.markdown(content)
-
-
-# In[14]:
-
 
 run_chatbot_app()
