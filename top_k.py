@@ -22,31 +22,16 @@ from sentence_transformers import SentenceTransformer
 # In[2]:
 
 
-OPENAI_API_KEY = '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'
+OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
+PINECONE_API_KEY = st.secrets["PINECONE_API_KEY"]
+PINECONE_ENV = st.secrets["PINECONE_ENV"]
+PINECONE_INDEX_NAME = st.secrets["PINECONE_INDEX_NAME"]
+
 def connect_to_pinecone():
-    pinecone.init(api_key="63a060f2-2e41-4854-a497-5866c8dd65b4", environment="gcp-starter")
-    return pinecone.Index('grundordnung-fau')
+    pinecone.init(api_key=PINECONE_API_KEY, environment=PINECONE_ENV)
+    return pinecone.Index(PINECONE_INDEX_NAME)
+    
 idx = connect_to_pinecone()
-
-
-# In[3]:
-
-
-tik_tokenizer = tiktoken.get_encoding('cl100k_base')
-
-# create the length function
-def tiktoken_len(text):
-    tokens = tik_tokenizer.encode(
-        text#,
-        #disallowed_special=()
-    )
-    return len(tokens)
-
-
-# ### Models
-# #### Sparse (lexical part)
-
-# In[4]:
 
 
 class SparseEncoder:
@@ -83,26 +68,19 @@ class SparseEncoder:
       return {"indices": list(indices), "values": list(values)}
 
 
-# In[5]:
+@st.cache_data
+def load_sparse_encoder(model_id):
+    return SparseEncoder(model_id)
 
+@st.cache_resource
+def load_sentence_transformer(model_name, device):
+    return SentenceTransformer('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2', device='cpu')
 
-model_id = 'sentence-transformers/paraphrase-multilingual-mpnet-base-v2'
-sparse_encoder = SparseEncoder(model_id)
-
-
-# #### Dense (semantic part)
-
-# In[6]:
-
-
-# embed = OpenAIEmbeddings(
-#     model = 'text-embedding-ada-002',
-#     openai_api_key= OPENAI_API_KEY
-# )
-
-embed = SentenceTransformer('sentence-transformers/paraphrase-multilingual-mpnet-base-v2', device='cpu')
-
-
+model_id = 'sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2'
+sparse_encoder = load_sparse_encoder(model_id)
+embed = load_sentence_transformer('sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2', 'cpu')
+#embed = load_sentence_transformer('sentence-transformers/paraphrase-multilingual-mpnet-base-v2', 'cpu')
+#sentence-transformers/paraphrase-multilingual-mpnet-base-v2
 # In[7]:
 
 
@@ -118,7 +96,7 @@ def hybrid_scale(dense, sparse, alpha: float):
     hdense = [v * alpha for v in dense]
     return hdense, hsparse
 
-
+@st.cache_data
 def hybrid_query(question, top_k, alpha, filter=None):
     def connect_to_pinecone():
         pinecone.init(api_key="63a060f2-2e41-4854-a497-5866c8dd65b4", environment="gcp-starter")
@@ -184,22 +162,22 @@ class StreamHandler(BaseCallbackHandler):
             raise ValueError(f"Invalid display_method: {self.display_method}")
 
 
-# In[13]:
+@st.cache_resource
+def connect_to_pinecone():
+    pinecone.init(api_key="63a060f2-2e41-4854-a497-5866c8dd65b4", environment="gcp-starter")
+    return pinecone.Index('grundordnung-fau')
 
 
 def run_chatbot_app():
     # Initialize Pinecone
-    @st.cache_resource
-    def connect_to_pinecone():
-        pinecone.init(api_key="63a060f2-2e41-4854-a497-5866c8dd65b4", environment="gcp-starter")
-        return pinecone.Index('grundordnung-fau')
     idx = connect_to_pinecone()
         
     # prompt template
     template = """You are a helpful chatbot assistant that is having a conversation with a human
                 You know all the regulstion from the Friedrich-Alexander-Universität Erlangen-Nürnberg
-                You should answer the question or questions posed in German, based on the context provided.
-
+                You should answer the question or questions posed in German, based ONLY on the context provided.
+                DON'T write about anything that isn't present in the context.
+                
                 Context:
                 {context}
 
@@ -236,7 +214,7 @@ def run_chatbot_app():
 
             # Fetch results with minimum score of relevancy
             results = hybrid_query(query, top_k=3, alpha=1)
-            filtered_list = [match for match in results['matches'] if match['score'] >= 0.95]
+            filtered_list = [match for match in results['matches'] if match['score'] >= 0.9]
             combined_docs_chain = []
             for result in filtered_list:
                 doc = Document(result['metadata']['content'], result['metadata'])  
@@ -260,4 +238,3 @@ def run_chatbot_app():
 
 
 run_chatbot_app()
-
