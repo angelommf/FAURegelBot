@@ -1,3 +1,3 @@
 # FAURegelBot
 
-Chatbot for the regulation of a University. This repo doesn't include the PDF parsing, which was also performed.
+Chatbot prototype for the regulation of a University deployed on Streamlit. This repo doesn't include the PDF parsing, which was also performed.
